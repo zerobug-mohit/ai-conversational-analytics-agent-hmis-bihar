@@ -1,0 +1,72 @@
+# ============================================================
+# CRITICAL — these files contain secrets and must NEVER be
+# committed to Git or shared publicly.
+# ============================================================
+
+# Environment file with all API keys and credentials
+.env
+
+# Google Cloud service account key (grants full BigQuery access)
+service_account.json
+*.json
+
+# ============================================================
+# Python runtime & tooling
+# ============================================================
+
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Virtual environments
+venv/
+env/
+.venv/
+.env/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Pytest cache
+.pytest_cache/
+.cache/
+
+# Coverage reports
+htmlcov/
+.coverage
+*.cover
+
+# MyPy
+.mypy_cache/
+
+# IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Log files
+*.log
+
+# ============================================================
+# Runtime data — written by the bot at runtime, must not be
+# committed (contains user messages, queries, and cache state).
+# ============================================================
+data/
+audit_log.jsonl
+schema_coalesce_cache.json
+
+# ============================================================
+# Generated artifacts — regenerate via tools/ when needed.
+# ============================================================
+*.xlsx
+hmis_bot_flowchart.png
