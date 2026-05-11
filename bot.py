@@ -1288,6 +1288,10 @@ async def _process_voice(
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     audit_logger.install_capture_handler()
+    # Eagerly open the Sheets connection so misconfigurations show up in
+    # the boot log instead of hiding inside the first message's background
+    # write. Runs in a thread so a slow Google API call doesn't block boot.
+    asyncio.create_task(asyncio.to_thread(audit_logger.warmup))
 
     async def _prewarm():
         try:

@@ -28,6 +28,8 @@ import contextvars
 import json
 import logging
 import os
+import time
+import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,7 +46,9 @@ _SCOPES = [
 ]
 _SHEET_TITLE = "HMIS Bot Audit Log"
 _TAB_NAME    = "Interactions"
-_JSONL_PATH  = Path("data") / "audit_log.jsonl"
+# Resolve JSONL path relative to this file so it doesn't depend on the
+# process CWD (systemd, cron, container entrypoints can all differ).
+_JSONL_PATH  = Path(__file__).resolve().parent / "data" / "audit_log.jsonl"
 
 _HEADERS = [
     "Timestamp (UTC)",
@@ -67,7 +71,17 @@ _HEADERS = [
 ]
 
 _worksheet: gspread.Worksheet | None = None
-_sheet_init_failed: bool = False   # stop retrying after a permanent failure
+# Cool-off timestamp after a failed init: we keep retrying so a transient
+# auth/network blip at boot doesn't permanently disable Sheets logging for
+# the rest of the process's life.
+_next_init_attempt_at: float = 0.0
+_INIT_RETRY_SECONDS: float = 60.0
+
+# Strong refs to in-flight background write tasks. asyncio.create_task only
+# returns a weakly-referenced handle — without this set, the GC can collect
+# the task mid-flight and the write silently disappears. Tasks remove
+# themselves on completion via the done callback.
+_pending_writes: set[asyncio.Task] = set()
 
 
 # ── Per-interaction log capture ──────────────────────────────────────────────
@@ -136,10 +150,13 @@ def end_capture() -> str:
 # ── Google Sheets initialisation (lazy, once) ────────────────────────────────
 
 def _init_worksheet() -> gspread.Worksheet | None:
-    global _worksheet, _sheet_init_failed
+    global _worksheet, _next_init_attempt_at
     if _worksheet is not None:
         return _worksheet
-    if _sheet_init_failed:
+    # Back off briefly after failures so we don't hammer the Sheets API on
+    # every webhook, but DO keep retrying — a one-time hiccup at boot used
+    # to disable logging for the lifetime of the process.
+    if time.monotonic() < _next_init_attempt_at:
         return None
 
     creds_file = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "service_account.json")
@@ -185,16 +202,33 @@ def _init_worksheet() -> gspread.Worksheet | None:
             }]})
 
         _worksheet = ws
-        logger.info("Google Sheets audit log initialised.")
+        logger.info(
+            f"Google Sheets audit log initialised "
+            f"(sheet_id={sheet_id or sh.id}, tab={_TAB_NAME})."
+        )
         return _worksheet
 
     except Exception as exc:
-        _sheet_init_failed = True
+        _next_init_attempt_at = time.monotonic() + _INIT_RETRY_SECONDS
+        # Log the full traceback once on each retry so the operator sees the
+        # actual cause (wrong sheet id, service account not shared, missing
+        # Sheets API, etc.) instead of just a one-line summary.
         logger.error(
-            f"Google Sheets init failed — interactions will only be saved to "
-            f"{_JSONL_PATH}.\nError: {exc}"
+            "Google Sheets init failed — JSONL will still capture writes. "
+            f"Retry in {_INIT_RETRY_SECONDS:.0f}s. Cause: {exc!r}\n"
+            f"{traceback.format_exc()}"
         )
         return None
+
+
+def warmup() -> None:
+    """
+    Eagerly attempt Sheets init at bot startup so misconfigurations
+    (missing AUDIT_SHEET_ID, service account not shared with the sheet,
+    Sheets API not enabled) surface in the boot log instead of being
+    hidden inside the first message's background task.
+    """
+    _init_worksheet()
 
 
 # ── Synchronous write (runs in thread pool) ──────────────────────────────────
@@ -239,7 +273,11 @@ def _write_sync(record: dict) -> None:
             value_input_option="USER_ENTERED",
         )
     except Exception as exc:
-        logger.error(f"Google Sheets append failed: {exc}")
+        # Include traceback so 403 (sheet not shared), 404 (bad ID), and
+        # quota errors are distinguishable in the logs.
+        logger.error(
+            f"Google Sheets append failed: {exc!r}\n{traceback.format_exc()}"
+        )
 
 
 # ── Public async entry point ─────────────────────────────────────────────────
@@ -294,5 +332,10 @@ async def log_interaction(
         },
     }
 
-    # Schedule background write — create_task returns immediately
-    asyncio.create_task(asyncio.to_thread(_write_sync, record))
+    # Schedule background write — create_task returns immediately.
+    # IMPORTANT: keep a strong reference in _pending_writes. Python's event
+    # loop only weakly references tasks, so without this set the GC can
+    # collect the task mid-flight and the row is silently lost.
+    task = asyncio.create_task(asyncio.to_thread(_write_sync, record))
+    _pending_writes.add(task)
+    task.add_done_callback(_pending_writes.discard)
