@@ -76,10 +76,22 @@ _ERR = (
 # Keyed by WhatsApp phone-number string (e.g. "919876543210").
 _user_data: dict[str, dict] = {}
 
+# Per-user asyncio lock — ensures only one message per user is processed at a
+# time.  Without this, rapid follow-up messages (or Meta webhook retries) can
+# interleave at await points and corrupt conversation state.
+_user_locks: dict[str, asyncio.Lock] = {}
+
 # Bounded set of recently-processed message IDs — Meta sometimes retries
 # webhooks; this prevents double-processing.
 _processed_message_ids: set[str] = set()
 _PROCESSED_MAX = 1000
+
+
+def _get_user_lock(user_id: str) -> asyncio.Lock:
+    """Return (creating if needed) the per-user asyncio.Lock."""
+    if user_id not in _user_locks:
+        _user_locks[user_id] = asyncio.Lock()
+    return _user_locks[user_id]
 
 
 def _get_state(user_id: str) -> dict:
@@ -88,7 +100,10 @@ def _get_state(user_id: str) -> dict:
             "history": [],
             "state": "idle",
             "pending": {},
+            "_last_seen": time.time(),
         }
+    else:
+        _user_data[user_id]["_last_seen"] = time.time()
     return _user_data[user_id]
 
 
@@ -1019,12 +1034,23 @@ async def _process_message(
     Run the full pipeline for an inbound text message and send the response
     back via the WhatsApp Cloud API.
     """
+    # Show blue ticks immediately — before acquiring the per-user lock so the
+    # user gets visual feedback even if a previous message is still processing.
+    asyncio.create_task(whatsapp_client.mark_as_read(message_id))
+    async with _get_user_lock(user_id):
+        await _process_message_locked(user_id, user_name, message_text, message_id)
+
+
+async def _process_message_locked(
+    user_id: str,
+    user_name: str | None,
+    message_text: str,
+    message_id: str,
+) -> None:
+    """Inner pipeline — always called with _get_user_lock(user_id) held."""
     audit_logger.start_capture()
 
     logger.info(f"Processing for user {user_id} ({user_name}): {message_text!r}")
-
-    # Mark the inbound message as read (shows blue ticks).  Best-effort.
-    asyncio.create_task(whatsapp_client.mark_as_read(message_id))
 
     # Built-in "commands" — these don't run the pipeline
     if _is_command(message_text, "start"):
@@ -1282,6 +1308,25 @@ async def _process_voice(
 
 
 # ---------------------------------------------------------------------------
+# LRU eviction — prune stale users to prevent unbounded memory growth
+# ---------------------------------------------------------------------------
+
+async def _evict_stale_users() -> None:
+    """Hourly background task: drop user state and locks not seen in 7 days."""
+    _SEVEN_DAYS = 7 * 86_400
+    while True:
+        await asyncio.sleep(3_600)
+        cutoff = time.time() - _SEVEN_DAYS
+        stale = [uid for uid, data in _user_data.items()
+                 if data.get("_last_seen", 0) < cutoff]
+        for uid in stale:
+            _user_data.pop(uid, None)
+            _user_locks.pop(uid, None)
+        if stale:
+            logger.info(f"Evicted {len(stale)} stale user(s) from memory (inactive >7 days).")
+
+
+# ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
 
@@ -1303,10 +1348,13 @@ async def lifespan(_app: FastAPI):
             logger.warning(f"Schema cache pre-warm failed (will retry on first query): {exc}")
 
     asyncio.create_task(_prewarm())
+
+    eviction_task = asyncio.create_task(_evict_stale_users())
     logger.info("HMIS WhatsApp Bot is ready to receive webhooks.")
 
     yield
 
+    eviction_task.cancel()
     await whatsapp_client.close()
     logger.info("HMIS WhatsApp Bot shutting down.")
 

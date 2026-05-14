@@ -38,6 +38,7 @@ dot_plot               — multi-metric proportional dot grid per entity
 
 import io
 import logging
+import threading
 
 import matplotlib
 matplotlib.use("Agg")
@@ -89,6 +90,12 @@ _DPI     = 200
 _FOOTER  = "Source: Bihar HMIS Data  |  HMIS Analytics Bot"
 _LABEL_INSIDE_THRESH = 0.15   # fraction of max where label flips inside/outside
 
+# Matplotlib's global state is NOT thread-safe. asyncio.to_thread() runs chart
+# generation in a thread pool, so concurrent users would corrupt each other's
+# figure handles. Serialise all rendering through this lock so only one chart
+# renders at a time. Charts are fast (<1s), so the wait is negligible.
+_chart_lock = threading.Lock()
+
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
@@ -98,55 +105,58 @@ def generate_chart(spec: dict, rows: list[dict]) -> io.BytesIO | None:
     chart_type = spec.get("chart_type", "none")
     if chart_type == "none":
         return None
-    try:
-        if chart_type == "gauge":
-            return _gauge(spec, rows)
-        elif chart_type == "line":
-            return _line(spec, rows)
-        elif chart_type in ("bar", "column"):
-            return _bar(spec, rows, horizontal=False)
-        elif chart_type == "horizontal_bar":
-            return _bar(spec, rows, horizontal=True)
-        elif chart_type in ("grouped_bar", "grouped_column"):
-            return _grouped_bar(spec, rows)
-        elif chart_type == "lollipop":
-            return _lollipop(spec, rows)
-        elif chart_type == "pie":
-            return _pie(spec, rows, donut=False)
-        elif chart_type == "donut":
-            return _pie(spec, rows, donut=True)
-        elif chart_type == "funnel":
-            return _funnel(spec, rows)
-        elif chart_type in ("stacked_bar", "stacked_column"):
-            return _stacked_bar(spec, rows, horizontal=False)
-        elif chart_type == "stacked_horizontal_bar":
-            return _stacked_bar(spec, rows, horizontal=True)
-        elif chart_type == "area":
-            return _area(spec, rows, stacked=False)
-        elif chart_type == "stacked_area":
-            return _area(spec, rows, stacked=True)
-        elif chart_type == "heatmap":
-            return _heatmap(spec, rows)
-        elif chart_type == "dumbbell":
-            return _dumbbell(spec, rows)
-        elif chart_type == "slope":
-            return _slope(spec, rows)
-        elif chart_type in ("scatter", "connected_scatter"):
-            return _scatter(spec, rows, connected=(chart_type == "connected_scatter"))
-        elif chart_type == "bubble":
-            return _scatter(spec, rows, bubble=True)
-        elif chart_type == "waterfall":
-            return _waterfall(spec, rows)
-        elif chart_type == "treemap":
-            return _treemap(spec, rows)
-        elif chart_type == "radar":
-            return _radar(spec, rows)
-        elif chart_type == "box_plot":
-            return _box_plot(spec, rows)
-        elif chart_type == "dot_plot":
-            return _dot_plot(spec, rows)
-    except Exception as exc:
-        logger.warning(f"Chart generation failed ({chart_type}): {exc}", exc_info=True)
+    with _chart_lock:
+        try:
+            if chart_type == "gauge":
+                return _gauge(spec, rows)
+            elif chart_type == "line":
+                return _line(spec, rows)
+            elif chart_type in ("bar", "column"):
+                return _bar(spec, rows, horizontal=False)
+            elif chart_type == "horizontal_bar":
+                return _bar(spec, rows, horizontal=True)
+            elif chart_type in ("grouped_bar", "grouped_column"):
+                return _grouped_bar(spec, rows)
+            elif chart_type == "lollipop":
+                return _lollipop(spec, rows)
+            elif chart_type == "pie":
+                return _pie(spec, rows, donut=False)
+            elif chart_type == "donut":
+                return _pie(spec, rows, donut=True)
+            elif chart_type == "funnel":
+                return _funnel(spec, rows)
+            elif chart_type in ("stacked_bar", "stacked_column"):
+                return _stacked_bar(spec, rows, horizontal=False)
+            elif chart_type == "stacked_horizontal_bar":
+                return _stacked_bar(spec, rows, horizontal=True)
+            elif chart_type == "area":
+                return _area(spec, rows, stacked=False)
+            elif chart_type == "stacked_area":
+                return _area(spec, rows, stacked=True)
+            elif chart_type == "heatmap":
+                return _heatmap(spec, rows)
+            elif chart_type == "dumbbell":
+                return _dumbbell(spec, rows)
+            elif chart_type == "slope":
+                return _slope(spec, rows)
+            elif chart_type in ("scatter", "connected_scatter"):
+                return _scatter(spec, rows, connected=(chart_type == "connected_scatter"))
+            elif chart_type == "bubble":
+                return _scatter(spec, rows, bubble=True)
+            elif chart_type == "waterfall":
+                return _waterfall(spec, rows)
+            elif chart_type == "treemap":
+                return _treemap(spec, rows)
+            elif chart_type == "radar":
+                return _radar(spec, rows)
+            elif chart_type == "box_plot":
+                return _box_plot(spec, rows)
+            elif chart_type == "dot_plot":
+                return _dot_plot(spec, rows)
+        except Exception as exc:
+            logger.warning(f"Chart generation failed ({chart_type}): {exc}", exc_info=True)
+        finally:
+            plt.close("all")  # release figures even when an exception skips _save()
     return None
 
 
@@ -908,7 +918,7 @@ def _scatter(spec: dict, rows: list[dict],
     sizes  = None
     if bubble and size_col:
         raw    = [float(r.get(size_col) or 0) for r in rows]
-        max_s  = max(raw) if raw else 1
+        max_s  = max(raw) if any(v > 0 for v in raw) else 1
         sizes  = [max(30, (v / max_s) * 900) for v in raw]
 
     fig, ax = plt.subplots(figsize=(10, 7))

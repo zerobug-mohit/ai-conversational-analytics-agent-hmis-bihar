@@ -822,11 +822,17 @@ MPV: Mission Parivar Vikas | AAM-PHC: Ayushman Arogya Mandir PHC | MLCU: Midwife
 async def _call(model: str, messages: list[dict], max_tokens: int) -> str:
     """Core helper: send messages to an OpenAI model and return the reply text."""
     full_messages = [{"role": "system", "content": _SYSTEM_PROMPT}] + messages
-    response = await _client.chat.completions.create(
-        model=model,
-        max_completion_tokens=max_tokens,
-        messages=full_messages,
-    )
+    try:
+        response = await asyncio.wait_for(
+            _client.chat.completions.create(
+                model=model,
+                max_completion_tokens=max_tokens,
+                messages=full_messages,
+            ),
+            timeout=45.0,
+        )
+    except asyncio.TimeoutError:
+        raise RuntimeError(f"OpenAI API call timed out after 45s (model={model})")
     return response.choices[0].message.content.strip()
 
 
@@ -1959,15 +1965,20 @@ async def transcribe_voice(audio_bytes: bytes, filename: str = "voice.ogg") -> s
     Handles English, Hindi, and Hinglish (mixed).
     Returns the transcribed text, or empty string on failure.
     """
-    response = await _client.audio.transcriptions.create(
-        model="whisper-1",
-        file=(filename, audio_bytes, "audio/ogg"),
-        # Prompt nudges Whisper toward the right vocabulary and script-switching
-        prompt=(
-            "Health data query. May contain Hindi, English, or Hinglish (mixed). "
-            "Topics: HMIS, immunization, BCG, FIC, ANC, Bihar, districts, blocks, coverage."
-        ),
-    )
+    try:
+        response = await asyncio.wait_for(
+            _client.audio.transcriptions.create(
+                model="whisper-1",
+                file=(filename, audio_bytes, "audio/ogg"),
+                prompt=(
+                    "Health data query. May contain Hindi, English, or Hinglish (mixed). "
+                    "Topics: HMIS, immunization, BCG, FIC, ANC, Bihar, districts, blocks, coverage."
+                ),
+            ),
+            timeout=120.0,
+        )
+    except asyncio.TimeoutError:
+        raise RuntimeError("Whisper transcription timed out after 120s")
     text = (response.text or "").strip()
     logger.info(f"Whisper transcription ({len(audio_bytes)//1024} KB): {text!r}")
     return text

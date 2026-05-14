@@ -31,11 +31,11 @@ _FORBIDDEN_KEYWORDS = [
 _MAX_ROWS = 500
 
 
-def _get_client() -> bigquery.Client:
-    """Create and return an authenticated BigQuery client."""
-    # Point the Google SDK to the service account file
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = GOOGLE_APPLICATION_CREDENTIALS
-    return bigquery.Client(project=BIGQUERY_PROJECT_ID)
+# Singleton client — created once at import time so every query reuses the same
+# authenticated connection pool instead of paying auth overhead per query.
+# bigquery.Client is thread-safe.
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = GOOGLE_APPLICATION_CREDENTIALS
+_bq_client = bigquery.Client(project=BIGQUERY_PROJECT_ID)
 
 
 def is_safe_query(sql: str) -> tuple[bool, str]:
@@ -88,9 +88,8 @@ def run_query(sql: str) -> list[dict]:
     logger.info(f"Running BigQuery query:\n{sql}\n")
 
     try:
-        client = _get_client()
-        query_job = client.query(sql)
-        result = query_job.result()  # blocks until the query finishes
+        query_job = _bq_client.query(sql)
+        result = query_job.result(timeout=60)  # raise TimeoutError after 60s
 
         rows = []
         for row in result:

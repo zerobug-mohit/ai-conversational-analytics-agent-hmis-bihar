@@ -20,6 +20,7 @@ Endpoints are scoped under WHATSAPP_PHONE_NUMBER_ID for the sender side and
 under the media ID for the receive side.
 """
 
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -118,16 +119,29 @@ async def mark_as_read(message_id: str) -> None:
         logger.debug(f"mark_as_read failed (ignored): {exc}")
 
 
+_RETRY_STATUSES = {429, 500, 502, 503}
+
+
 async def _post_messages(payload: dict, what: str) -> dict:
     url = f"{_GRAPH_BASE}/{WHATSAPP_PHONE_NUMBER_ID}/messages"
     client = _get_client()
-    resp = await client.post(url, json=payload, headers=_JSON_HEADERS)
-    if resp.status_code >= 400:
-        logger.error(
-            f"WhatsApp {what} send failed: HTTP {resp.status_code} — {resp.text}"
-        )
-        resp.raise_for_status()
-    return resp.json()
+    for attempt in range(3):
+        resp = await client.post(url, json=payload, headers=_JSON_HEADERS)
+        if resp.status_code in _RETRY_STATUSES and attempt < 2:
+            wait = 2 ** attempt
+            logger.warning(
+                f"WhatsApp {what} send: HTTP {resp.status_code}, "
+                f"retry in {wait}s (attempt {attempt + 1}/3)"
+            )
+            await asyncio.sleep(wait)
+            continue
+        if resp.status_code >= 400:
+            logger.error(
+                f"WhatsApp {what} send failed: HTTP {resp.status_code} — {resp.text}"
+            )
+            resp.raise_for_status()
+        return resp.json()
+    resp.raise_for_status()  # exhausted retries
 
 
 # ---------------------------------------------------------------------------
@@ -147,12 +161,22 @@ async def upload_media(file_bytes: bytes, mime_type: str, filename: str) -> str:
         "type": (None, mime_type),
     }
     client = _get_client()
-    resp = await client.post(url, files=files, headers=_AUTH_HEADERS)
-    if resp.status_code >= 400:
-        logger.error(
-            f"WhatsApp media upload failed: HTTP {resp.status_code} — {resp.text}"
-        )
-        resp.raise_for_status()
+    for attempt in range(3):
+        resp = await client.post(url, files=files, headers=_AUTH_HEADERS)
+        if resp.status_code in _RETRY_STATUSES and attempt < 2:
+            wait = 2 ** attempt
+            logger.warning(
+                f"WhatsApp media upload: HTTP {resp.status_code}, "
+                f"retry in {wait}s (attempt {attempt + 1}/3)"
+            )
+            await asyncio.sleep(wait)
+            continue
+        if resp.status_code >= 400:
+            logger.error(
+                f"WhatsApp media upload failed: HTTP {resp.status_code} — {resp.text}"
+            )
+            resp.raise_for_status()
+        break
     media_id = resp.json().get("id")
     if not media_id:
         raise RuntimeError(f"upload_media returned no id: {resp.json()}")
