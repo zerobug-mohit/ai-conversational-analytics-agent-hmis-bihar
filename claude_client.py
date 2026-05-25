@@ -270,6 +270,25 @@ Examples: C-section rate, home delivery rate, SBA rate, dropout rate, 1st-trimes
   ROUND(SUM(numerator_col) / NULLIF(SUM(denominator_col), 0) * 100, 1)
 Both numerator and denominator come from HMIS data columns — NOT from target columns.
 
+Key rate formulas:
+• Institutional delivery rate:
+    numerator   = SUM(_2_2_number_of_institutional_deliveries_conducted_including_c_sections)
+    denominator = SUM(_2_2_...) + SUM(COALESCE(home_SBA_col)) + SUM(COALESCE(home_nonSBA_col))
+    i.e., total deliveries = institutional + home(SBA) + home(non-SBA) — NOT just home deliveries.
+
+• ASHA presence rate  (CRITICAL — model often gets this wrong):
+    ROUND(SUM(_9_7_3_number_of_immunisation_sessions_where_ashas_were_present) /
+          NULLIF(SUM(_9_7_2_immunisation_sessions_held), 0) * 100, 1) AS asha_presence_rate_pct
+    Always select BOTH _9_7_2 (sessions held) AND _9_7_3 (sessions with ASHA) in the same query.
+
+• Session dropout rate:
+    ROUND((SUM(_9_7_1_immunisation_sessions_planned) - SUM(_9_7_2_immunisation_sessions_held)) /
+          NULLIF(SUM(_9_7_1_immunisation_sessions_planned), 0) * 100, 1) AS dropout_rate_pct
+
+• 1st-trimester ANC rate:
+    numerator   = SUM(COALESCE(_1_1_1_..._new_anc..., _1_1_1_..._total_anc...))
+    denominator = SUM(COALESCE(new_ANC_registered_col, old_ANC_registered_col))
+
 ── 2D. AVERAGE / MEAN ──
   ROUND(AVG(column), 1)   or   ROUND(SUM(col) / COUNT(DISTINCT facility_code), 1)
 
@@ -394,8 +413,12 @@ This is always a valid and answerable question — never return CANNOT_GENERATE 
 === RULE 7 — RESPONSE LANGUAGE & FORMAT ===
 • Detect the language the user wrote in. Reply in the SAME language.
   If the user wrote in English → reply in English.
-  If the user wrote in Hindi → reply in Hindi.
+  If the user wrote in Hindi (Devanagari) → reply in Hindi.
+  If the user wrote in Hinglish (Roman-script Hindi) → reply in Hinglish.
   Default to English when the language is ambiguous.
+  CRITICAL: Base the language on the CURRENT message only — do NOT carry over
+  the language from a previous question. If conversation history was cleared and the
+  new question is in English, reply in English even if prior messages were in Hindi.
 • Keep responses ≤ 300 words for WhatsApp readability.
 • Use Indian number formatting: 1,00,000 (not 100,000).
 • Round all percentages to 1 decimal place.
@@ -795,6 +818,22 @@ or data collection mode. When such a filter is requested, use these columns:
   Use exact match or LIKE: district_category = 'Aspirational'
   Common values: 'Aspirational', 'Mission Parivar Vikas (MPV)'
   (Most districts have no category — category IS NULL)
+  CRITICAL: "aspirational districts", "MPV districts", "Mission Parivar Vikas" are NOT
+  geographic entities — they are district_category filter values. Do NOT try to look them
+  up in district_name. Always use: WHERE district_category = 'Aspirational'  or
+  WHERE district_category LIKE '%MPV%'  or  WHERE district_category LIKE '%Mission Parivar%'
+  Example — "BCG coverage in aspirational districts of Bihar in March 2026":
+    WHERE state_code = 10 AND district_category = 'Aspirational'
+      AND Month = '2026-03-01' AND infacility_or_outreach_or_total = 'Total'
+  Example — "FIC in MPV districts":
+    WHERE district_category LIKE '%MPV%' AND infacility_or_outreach_or_total = 'Total'
+
+• FACILITY TYPE FILTER + TARGET NOTE:
+  When a user asks for coverage filtered by facility_type (e.g. "FIC at PHCs in Patna"),
+  apply the facility_type LIKE filter in the WHERE clause. For the denominator, use the
+  DISTRICT-level target (not facility-level), since there is no separate target pre-computed
+  for a facility-type subset. This gives the % of the district's target met by that facility
+  type. State this assumption explicitly in the response summary.
 
 • rural_urban — rural or urban facility
   Values: 'Rural', 'Urban'
@@ -832,7 +871,7 @@ MPV: Mission Parivar Vikas | AAM-PHC: Ayushman Arogya Mandir PHC | MLCU: Midwife
 # ---------------------------------------------------------------------------
 # Helper: call the OpenAI API
 # ---------------------------------------------------------------------------
-async def _call(model: str, messages: list[dict], max_tokens: int) -> str:
+async def _call(model: str, messages: list[dict], max_tokens: int, timeout: float = 45.0) -> str:
     """Core helper: send messages to an OpenAI model and return the reply text."""
     full_messages = [{"role": "system", "content": _SYSTEM_PROMPT}] + messages
     try:
@@ -842,21 +881,21 @@ async def _call(model: str, messages: list[dict], max_tokens: int) -> str:
                 max_completion_tokens=max_tokens,
                 messages=full_messages,
             ),
-            timeout=45.0,
+            timeout=timeout,
         )
     except asyncio.TimeoutError:
-        raise RuntimeError(f"OpenAI API call timed out after 45s (model={model})")
+        raise RuntimeError(f"OpenAI API call timed out after {timeout:.0f}s (model={model})")
     return response.choices[0].message.content.strip()
 
 
 async def _call_sql(messages: list[dict], max_tokens: int = 2048) -> str:
-    """Use the primary model (AI_MODEL_SQL) — for SQL generation, analysis, and reasoning."""
-    return await _call(AI_MODEL_SQL, messages, max_tokens)
+    """Use the primary model (AI_MODEL_SQL) — 90s timeout for complex SQL generation."""
+    return await _call(AI_MODEL_SQL, messages, max_tokens, timeout=90.0)
 
 
 async def _call_fast(messages: list[dict], max_tokens: int = 1024) -> str:
     """Use the fast model (AI_MODEL_FAST) — for geo extraction, chart spec, and simple tasks."""
-    return await _call(AI_MODEL_FAST, messages, max_tokens)
+    return await _call(AI_MODEL_FAST, messages, max_tokens, timeout=45.0)
 
 
 # ---------------------------------------------------------------------------
@@ -1024,9 +1063,11 @@ CRITICAL — block lookup column:
   NEVER use block_name or block_code — those columns have data anomalies and will return 0 results.
   Example: "Sadar block" → WHERE LOWER(sub_district_ulb_name) LIKE LOWER('%sadar%')
 
-IMPORTANT — facility type is NOT a geographic entity:
-  Terms like "AAM-PHC", "Sub Centre", "PHC", "CHC", "DH" refer to facility_type — a filter column,
-  not a location. Do NOT include them in the entities array. The SQL generator handles them separately.
+IMPORTANT — these are NOT geographic entities (do NOT include in entities array):
+  • Facility types: "AAM-PHC", "Sub Centre", "PHC", "CHC", "District Hospital" → facility_type filter
+  • District categories: "aspirational", "MPV", "Mission Parivar Vikas" → district_category filter
+  • Rural/urban: "rural", "urban" → rural_urban filter
+  The SQL generator handles all of these as WHERE clause conditions, not geo lookups.
 
 Return ALL entities as an array — even if only one entity is mentioned.
 
@@ -2007,9 +2048,10 @@ async def transcribe_voice(audio_bytes: bytes, filename: str = "voice.ogg") -> s
             _client.audio.transcriptions.create(
                 model="whisper-1",
                 file=(filename, audio_bytes, "audio/ogg"),
+                language="hi",
                 prompt=(
-                    "Health data query. May contain Hindi, English, or Hinglish (mixed). "
-                    "Topics: HMIS, immunization, BCG, FIC, ANC, Bihar, districts, blocks, coverage."
+                    "हिंदी या Hinglish में HMIS स्वास्थ्य डेटा प्रश्न। "
+                    "Topics: BCG, FIC, ANC, Bihar, Patna, Gaya, districts, blocks, coverage, immunization."
                 ),
             ),
             timeout=120.0,

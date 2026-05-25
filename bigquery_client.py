@@ -89,7 +89,7 @@ def run_query(sql: str) -> list[dict]:
 
     try:
         query_job = _bq_client.query(sql)
-        result = query_job.result(timeout=60)  # raise TimeoutError after 60s
+        result = query_job.result(timeout=120)  # raise TimeoutError after 120s
 
         rows = []
         for row in result:
