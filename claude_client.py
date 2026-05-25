@@ -343,10 +343,12 @@ Known pairs whose names differ between format versions (use as fallback):
 
 === RULE 5 — GEOGRAPHIC FILTERING ===
 Always use numeric codes in the final WHERE clause — NEVER filter by name string.
+  state_code = 10                (not state = 'Bihar') ← use this for state-level queries
   district_code = 191            (not district_name = 'Begusarai')
   sub_district_ulb_code = 1671   (not sub_district_ulb_name = 'Sadar') ← use this for block queries
   facility_code = 304569         (not facility_name = 'PHC Samho')
 NEVER use block_code or block_name in WHERE clauses — those columns have data anomalies.
+When confirmed_entities contains a state row (with state_code), filter with: WHERE state_code = <value>
 
 === RULE 6 — SAFETY ===
 Only generate SELECT queries. Never write DELETE, UPDATE, INSERT, DROP,
@@ -777,6 +779,17 @@ or data collection mode. When such a filter is requested, use these columns:
   Use LIKE with LOWER(): LOWER(facility_type) LIKE '%phc%'
   Common values: 'AAM-PHC/PHC', 'Sub Centre', 'Community Health Centre',
   'Sub-Divisional Hospital', 'District Hospital', 'Urban PHC', 'Urban Health Post'
+  CRITICAL: Always apply this filter when the user specifies a facility type, even if it is not
+  a confirmed geographic entity. It is a WHERE clause filter, not part of geo lookup.
+  Example — "FIC coverage at AAM-PHCs in Patna in March 2026":
+    WHERE district_code = 197
+      AND LOWER(facility_type) LIKE '%aam-phc%'
+      AND Month = '2026-03-01'
+      AND infacility_or_outreach_or_total = 'Total'
+  Example — "BCG at Sub Centres in Sadar block":
+    WHERE sub_district_ulb_code = <code>
+      AND LOWER(facility_type) LIKE '%sub centre%'
+      AND infacility_or_outreach_or_total = 'Total'
 
 • district_category — district classification
   Use exact match or LIKE: district_category = 'Aspirational'
@@ -997,16 +1010,31 @@ Rules:
 - Use LOWER(...) LIKE LOWER('%name%') — never exact equality.
 - For district: SELECT DISTINCT district_name, district_code FROM `biharhmisdatafordvctool.BH_HMIS_Data.BH_HMIS_Facility_Level_Data_with_all_Targets` WHERE LOWER(district_name) LIKE LOWER('%name%') LIMIT 20
 - For block:    SELECT DISTINCT sub_district_ulb_name, sub_district_ulb_code, district_name FROM `biharhmisdatafordvctool.BH_HMIS_Data.BH_HMIS_Facility_Level_Data_with_all_Targets` WHERE LOWER(sub_district_ulb_name) LIKE LOWER('%name%') LIMIT 20
-- For facility: SELECT DISTINCT facility_name, facility_code, block_name, district_name FROM `biharhmisdatafordvctool.BH_HMIS_Data.BH_HMIS_Facility_Level_Data_with_all_Targets` WHERE LOWER(facility_name) LIKE LOWER('%name%') LIMIT 20
+- For facility: SELECT DISTINCT facility_name, facility_code, sub_district_ulb_name, district_name FROM `biharhmisdatafordvctool.BH_HMIS_Data.BH_HMIS_Facility_Level_Data_with_all_Targets` WHERE LOWER(facility_name) LIKE LOWER('%name%') LIMIT 20
 - For state:    SELECT DISTINCT state, state_code FROM `biharhmisdatafordvctool.BH_HMIS_Data.BH_HMIS_Facility_Level_Data_with_all_Targets` WHERE LOWER(state) LIKE LOWER('%name%') LIMIT 5
 - If no geographic name is mentioned (follow-up question uses prior context), return has_geo = false.
+
+CRITICAL — state classification:
+  "Bihar" and "Uttar Pradesh" (or "UP") are STATE names — always use geo_type: "state".
+  They are NOT districts. Never classify a state name as a district.
+  Do NOT infer "Bihar" from the system prompt context — only extract it if the user explicitly wrote it.
+
+CRITICAL — block lookup column:
+  For ANY block or sub-district query, ALWAYS use sub_district_ulb_name in the WHERE clause.
+  NEVER use block_name or block_code — those columns have data anomalies and will return 0 results.
+  Example: "Sadar block" → WHERE LOWER(sub_district_ulb_name) LIKE LOWER('%sadar%')
+
+IMPORTANT — facility type is NOT a geographic entity:
+  Terms like "AAM-PHC", "Sub Centre", "PHC", "CHC", "DH" refer to facility_type — a filter column,
+  not a location. Do NOT include them in the entities array. The SQL generator handles them separately.
 
 Return ALL entities as an array — even if only one entity is mentioned.
 
 Respond with ONLY valid JSON — no explanation, no markdown fences:
 {{"has_geo": true, "entities": [
+  {{"geo_type": "state", "user_input_name": "Bihar", "lookup_sql": "SELECT DISTINCT state, state_code FROM `biharhmisdatafordvctool.BH_HMIS_Data.BH_HMIS_Facility_Level_Data_with_all_Targets` WHERE LOWER(state) LIKE LOWER('%bihar%') LIMIT 5"}},
   {{"geo_type": "district", "user_input_name": "Patna", "lookup_sql": "SELECT DISTINCT district_name, district_code FROM `biharhmisdatafordvctool.BH_HMIS_Data.BH_HMIS_Facility_Level_Data_with_all_Targets` WHERE LOWER(district_name) LIKE LOWER('%patna%') LIMIT 20"}},
-  {{"geo_type": "district", "user_input_name": "Darbhanga", "lookup_sql": "SELECT DISTINCT district_name, district_code FROM `biharhmisdatafordvctool.BH_HMIS_Data.BH_HMIS_Facility_Level_Data_with_all_Targets` WHERE LOWER(district_name) LIKE LOWER('%darbhanga%') LIMIT 20"}}
+  {{"geo_type": "block", "user_input_name": "Sadar", "lookup_sql": "SELECT DISTINCT sub_district_ulb_name, sub_district_ulb_code, district_name FROM `biharhmisdatafordvctool.BH_HMIS_Data.BH_HMIS_Facility_Level_Data_with_all_Targets` WHERE LOWER(sub_district_ulb_name) LIKE LOWER('%sadar%') LIMIT 20"}}
 ]}}
 or
 {{"has_geo": false}}
@@ -1069,10 +1097,19 @@ async def generate_sql(
             f"CRITICAL: NEVER guess, invent, or assume codes for any location NOT listed above.\n"
             f"If the question mentions a location that is not in this confirmed list, do NOT make up a code for it.\n"
         )
+    elif history:
+        entity_context = (
+            "\nNo new geographic entity was specified in the current message — "
+            "use only geographic context that is explicitly present in the conversation "
+            "history above. Do NOT infer or assume any geography from the system prompt.\n"
+        )
     else:
         entity_context = (
-            "\nNo new geographic entity was specified — use the geographic context "
-            "from the conversation history above.\n"
+            "\nNo geographic entity has been confirmed and there is no prior conversation context. "
+            "Do NOT assume any default geography (e.g. do NOT assume 'Bihar' from the system prompt). "
+            "If the question requires a specific location that has not been provided, "
+            "generate the SQL without a geographic filter (i.e. all-India / all-state scope) "
+            "or use CANNOT_GENERATE to ask the user to specify a location.\n"
         )
 
     today_str = date.today().strftime("%Y-%m-%d")
