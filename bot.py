@@ -24,9 +24,11 @@ Run with:
 
 import asyncio
 import datetime
+import json
 import logging
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, Response
 import uvicorn
@@ -85,6 +87,47 @@ _user_locks: dict[str, asyncio.Lock] = {}
 # webhooks; this prevents double-processing.
 _processed_message_ids: set[str] = set()
 _PROCESSED_MAX = 1000
+
+# ---------------------------------------------------------------------------
+# Allowlist — only approved phone numbers can use the bot.
+# File: allowed_users.json  (same directory as bot.py)
+# Format: {"allowed_numbers": ["919876543210", "918765432109"]}
+# Hot-reloads on every message — edit the file, no restart needed.
+# If the file does not exist, the bot is open to everyone (backwards-compat).
+# ---------------------------------------------------------------------------
+_ALLOWLIST_FILE = Path(__file__).resolve().parent / "allowed_users.json"
+_allowlist_cache: set[str] = set()
+_allowlist_mtime: float = 0.0
+_allowlist_exists: bool = False
+
+
+def _load_allowlist() -> tuple[bool, set[str]]:
+    """Return (file_exists, set_of_allowed_numbers). Hot-reloads when file changes."""
+    global _allowlist_cache, _allowlist_mtime, _allowlist_exists
+    try:
+        mtime = _ALLOWLIST_FILE.stat().st_mtime
+        if mtime != _allowlist_mtime:
+            with open(_ALLOWLIST_FILE) as f:
+                data = json.load(f)
+            _allowlist_cache = {str(n).strip() for n in data.get("allowed_numbers", [])}
+            _allowlist_mtime = mtime
+            _allowlist_exists = True
+            logger.info(f"Allowlist reloaded: {len(_allowlist_cache)} approved number(s).")
+        return True, _allowlist_cache
+    except FileNotFoundError:
+        _allowlist_exists = False
+        return False, set()
+    except Exception as exc:
+        logger.warning(f"Could not read allowlist: {exc} — keeping previous list.")
+        return _allowlist_exists, _allowlist_cache
+
+
+def _is_allowed(user_id: str) -> bool:
+    """Return True if user_id is allowed to use the bot."""
+    exists, numbers = _load_allowlist()
+    if not exists:
+        return True   # No file = open access
+    return user_id in numbers
 
 
 def _get_user_lock(user_id: str) -> asyncio.Lock:
@@ -1436,6 +1479,19 @@ async def receive_webhook(request: Request) -> Response:
 
                 user_id = message.get("from", "")
                 if not user_id:
+                    continue
+
+                # Allowlist check — block unauthorized users before any processing
+                if not _is_allowed(user_id):
+                    logger.info(f"Blocked unauthorized user {user_id} — not in allowlist.")
+                    asyncio.create_task(
+                        whatsapp_client.send_text(
+                            user_id,
+                            "⛔ You are not authorized to use this service.\n\n"
+                            "To request access, please contact:\n"
+                            "mchaurasiya@wjcf.in",
+                        )
+                    )
                     continue
 
                 user_name = None
