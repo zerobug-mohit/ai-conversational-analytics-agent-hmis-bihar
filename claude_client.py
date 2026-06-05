@@ -1864,6 +1864,129 @@ questions the user could ask next, grounded in the conversation context.
 
 
 # ---------------------------------------------------------------------------
+# 3+4 COMBINED: summarize_and_findings — ONE API call instead of two.
+# Returns (answer_and_meta, key_findings) exactly as the two separate
+# functions did, so bot.py stitching logic needs no changes.
+# ---------------------------------------------------------------------------
+async def summarize_and_findings(
+    user_question: str,
+    results: list[dict],
+    history: list[dict],
+    generated_sql: str | None = None,
+) -> tuple[str, str]:
+    """
+    Single SQL-model call replacing summarize_results + generate_key_findings.
+    Saves one expensive API call (and one full system-prompt send) per query.
+
+    Returns (answer_and_meta, key_findings) — same contract as before so the
+    caller in bot.py does not need to change.
+    """
+    formatted = _format_results(results)
+    row_count = len(results)
+    sql_context = ""
+    if generated_sql:
+        sql_context = (
+            f"\nSQL query that was executed:\n{generated_sql}\n"
+            f"Use this to describe what was queried in plain language for the "
+            f"'What the agent did' section.\n"
+        )
+
+    combined_prompt = f"""You are helping a health worker or block-level officer in Bihar
+understand data from the HMIS system. They are NOT a technical person. Write everything
+in simple, clear language — like explaining to a colleague, not writing a report.
+
+The user asked: "{user_question}"
+The data returned {row_count} row(s):
+{formatted}
+{sql_context}
+Write a response with EXACTLY these four sections in this order, using single-asterisk
+bold headers (WhatsApp Markdown format), exactly as shown:
+
+*Answer*
+- Start with the direct answer in one plain sentence.
+- Then give the key numbers: how many children / women / facilities, and the percentage
+  if relevant. Show both the count and the total (e.g. "4,523 out of 5,100 children —
+  that's 88.7% coverage").
+- Use Indian number formatting (e.g., 1,00,000). Round percentages to 1 decimal place.
+- If data is missing, say clearly: "No data was reported for this period."
+- TABLE RULE: If the result has 3 or more places or time periods with 2 or more numbers
+  each, show a simple Markdown table instead of a long list of sentences.
+  Only use a table when there are 3+ rows AND 2+ meaningful columns.
+- Keep to 3–5 sentences (or one table + 1–2 sentences).
+
+*Key Findings and Insights*
+- Share only things that are actually useful or surprising — things the person should
+  notice or act on. Do NOT just repeat the numbers from the Answer section.
+- Use plain language. Instead of "dropout between doses", say "fewer children got the
+  second dose than the first". Avoid technical or government jargon.
+- If performance is low, say it clearly: "This is below the 90% target — around 1 in
+  10 children are being missed." Give real-world meaning to the numbers.
+- Be specific — name the place and give the number.
+- 3–5 bullets only. Short and clear — one sentence each if possible.
+- TABLE RULE: When comparing 3+ places across 2+ numbers, use a simple table (2–3 columns max).
+
+*What the agent did*
+- In 1–2 simple sentences, explain what was looked up: which indicator, which geography,
+  which time period.
+- Write it like you are explaining to someone who has never used a database.
+  Example: "I looked up how many children received the BCG vaccine in Gaya district
+  during April 2024, using data reported by all health facilities there."
+- Do NOT mention SQL, database queries, column names, or any technical terms.
+
+*Next queries you could try*
+- Suggest 2–3 follow-up questions to help the user dig deeper into the SAME topic.
+  Think like an analyst guiding an investigation: what is the natural next question?
+- Follow a logical depth progression (district → block → facility, one vaccine →
+  trend, low coverage → sessions / completeness).
+- Only suggest questions answerable using HMIS data in this system.
+- Write each suggestion as a ready-to-send question in plain language — one short line each.
+
+DATA QUALITY NAMING RULES (apply when data contains report_section = completeness / correctness / pre):
+• In the *Answer* section, structure under three plain subheadings:
+  *Data Completeness*, *Data Correctness*, *Reporting Errors (PREs)*
+• NEVER say "Section A", "Section B1", "Section B2", "Section C", "Group A1", "Rule A", etc.
+• Use full plain-English names for sections and groups:
+  Completeness: "ANC, Deliveries & Live Births" | "Birth-to-12-month immunisation" |
+    "Booster & older-child doses" | "AEFI & Session reporting"
+  PRE groups: "6-week visit co-admin checks (Penta1 vs OPV1, IPV1, Rotavirus-1, PCV1)" |
+    "10-week visit co-admin checks" | "14-week visit co-admin checks" |
+    "9–11 month visit co-admin checks" | "Logical impossibility checks"
+  Correctness: "HepB0 vs Deliveries" | "Sessions Held vs Planned" |
+    "FIC vs MR1" | "AEFI Deaths vs Serious cases"
+• Always express percentages as plain fractions: "64.5% — roughly 2 in 3 facilities".
+
+Keep the total reply under 350 words.
+Detect the language the user wrote in and reply in the SAME language (Hindi or English).
+Output all section headers using single asterisks (*Header*) — never double asterisks.
+"""
+    messages = list(history) + [{"role": "user", "content": combined_prompt}]
+    combined = await _call_sql(messages, max_tokens=2048)
+    logger.info(f"Combined summarize+findings generated ({len(combined)} chars)")
+
+    # Split into (answer_and_meta, key_findings) to preserve bot.py stitching logic.
+    # Combined output order: *Answer* → *Key Findings* → *What the agent did* → *Next queries*
+    # answer_and_meta = *Answer* + *What the agent did* + *Next queries*  (no Key Findings)
+    # key_findings    = *Key Findings and Insights* section only
+    _KF_HEADER = "*Key Findings and Insights*"
+    _AGENT_HEADER = "*What the agent did*"
+    if _KF_HEADER in combined and _AGENT_HEADER in combined:
+        answer_part, rest = combined.split(_KF_HEADER, 1)
+        if _AGENT_HEADER in rest:
+            _findings_body, agent_onwards = rest.split(_AGENT_HEADER, 1)
+            answer_and_meta = answer_part.rstrip() + "\n\n" + _AGENT_HEADER + agent_onwards
+            key_findings = _KF_HEADER + _findings_body.rstrip()
+        else:
+            answer_and_meta = answer_part.rstrip()
+            key_findings = _KF_HEADER + rest
+    else:
+        # Fallback: return everything as answer_and_meta, empty key_findings
+        answer_and_meta = combined
+        key_findings = ""
+
+    return answer_and_meta, key_findings
+
+
+# ---------------------------------------------------------------------------
 # 3. KEY FINDINGS AND INSIGHTS  (GPT-4o — detailed analytical section)
 # ---------------------------------------------------------------------------
 async def generate_key_findings(

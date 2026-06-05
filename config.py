@@ -52,7 +52,7 @@ GOOGLE_APPLICATION_CREDENTIALS: str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS"
 BIGQUERY_PROJECT_ID: str = os.getenv("BIGQUERY_PROJECT_ID", "biharhmisdatafordvctool")
 
 # --- Conversation settings ---
-MAX_HISTORY_EXCHANGES: int = int(os.getenv("MAX_HISTORY_EXCHANGES", "10"))
+MAX_HISTORY_EXCHANGES: int = int(os.getenv("MAX_HISTORY_EXCHANGES", "5"))
 
 # --- Audit logging ---
 # Google Sheet ID for the audit log (the part of the URL between /d/ and /edit).

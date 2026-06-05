@@ -334,17 +334,12 @@ async def _run_query_pipeline(
     trace["bq_rows"]      = results
 
     logger.info(f"Summarizing {len(results)} rows for user {user_id}")
-    answer_and_meta, key_findings, chart_spec = await asyncio.gather(
-        claude_client.summarize_results(
+    (answer_and_meta, key_findings), chart_spec = await asyncio.gather(
+        claude_client.summarize_and_findings(
             user_question=original_question,
             results=results,
             history=history,
             generated_sql=sql,
-        ),
-        claude_client.generate_key_findings(
-            user_question=original_question,
-            results=results,
-            history=history,
         ),
         claude_client.get_chart_spec(
             user_question=original_question,
