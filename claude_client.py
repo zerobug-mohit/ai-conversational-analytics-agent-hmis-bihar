@@ -872,7 +872,12 @@ MPV: Mission Parivar Vikas | AAM-PHC: Ayushman Arogya Mandir PHC | MLCU: Midwife
 # Helper: call the OpenAI API
 # ---------------------------------------------------------------------------
 async def _call(model: str, messages: list[dict], max_tokens: int, timeout: float = 45.0) -> str:
-    """Core helper: send messages to an OpenAI model and return the reply text."""
+    """Core helper: send messages to an OpenAI model and return the reply text.
+
+    OpenAI prompt caching is automatic — the system prompt prefix is cached
+    server-side and reused across calls within the TTL window (~5 min).
+    Cache hits are logged so you can verify savings in journalctl.
+    """
     full_messages = [{"role": "system", "content": _SYSTEM_PROMPT}] + messages
     try:
         response = await asyncio.wait_for(
@@ -885,6 +890,22 @@ async def _call(model: str, messages: list[dict], max_tokens: int, timeout: floa
         )
     except asyncio.TimeoutError:
         raise RuntimeError(f"OpenAI API call timed out after {timeout:.0f}s (model={model})")
+
+    # Log token usage and cache hit stats
+    usage = response.usage
+    if usage:
+        cached = 0
+        details = getattr(usage, "prompt_tokens_details", None)
+        if details:
+            cached = getattr(details, "cached_tokens", 0) or 0
+        total_prompt = usage.prompt_tokens or 0
+        completion = usage.completion_tokens or 0
+        hit_pct = round(cached * 100 / total_prompt) if total_prompt else 0
+        logger.info(
+            f"[tokens] prompt={total_prompt} (cached={cached}, {hit_pct}% hit) "
+            f"completion={completion} model={model}"
+        )
+
     return response.choices[0].message.content.strip()
 
 
