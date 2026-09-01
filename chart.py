@@ -2,7 +2,7 @@
 chart.py
 --------
 McKinsey-style, slide-ready charts from BigQuery result sets.
-- Font: Trebuchet MS
+- Font: Tahoma
 - 200 DPI output
 - Thin figure border, action title with rule, source footer
 - Data labels inside bars (white) when bar is wide/tall enough
@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 # ── Global style ──────────────────────────────────────────────────────────────
 matplotlib.rcParams.update({
     "font.family":          "sans-serif",
-    "font.sans-serif":      ["Trebuchet MS", "Arial", "DejaVu Sans"],
+    "font.sans-serif":      ["Tahoma", "Verdana", "DejaVu Sans"],
     "figure.facecolor":     "#FFFFFF",
     "axes.facecolor":       "#FFFFFF",
     "axes.edgecolor":       "#DDDDDD",

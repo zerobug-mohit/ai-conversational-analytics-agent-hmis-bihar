@@ -134,7 +134,7 @@ def generate_excel(
     ws.append([title] + [""] * (n_cols - 1))
     _merge(1)
     c = ws.cell(1, 1)
-    c.font      = Font(name="Trebuchet MS", bold=True, color="FFFFFF", size=14)
+    c.font      = Font(name="Tahoma", bold=True, color="FFFFFF", size=14)
     c.fill      = navy_fill
     c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     ws.row_dimensions[1].height = 30
@@ -143,7 +143,7 @@ def generate_excel(
     ws.append([_FOOTER_BASE] + [""] * (n_cols - 1))
     _merge(2)
     c = ws.cell(2, 1)
-    c.font      = Font(name="Trebuchet MS", italic=True, color="555555", size=9)
+    c.font      = Font(name="Tahoma", italic=True, color="555555", size=9)
     c.fill      = src_fill
     c.alignment = Alignment(horizontal="left", vertical="center")
     ws.row_dimensions[2].height = 15
@@ -157,12 +157,12 @@ def generate_excel(
     ws.row_dimensions[4].height = 22
     for ci in range(1, n_cols + 1):
         cell = ws.cell(4, ci)
-        cell.font      = Font(name="Trebuchet MS", bold=True, color="FFFFFF", size=10)
+        cell.font      = Font(name="Tahoma", bold=True, color="FFFFFF", size=10)
         cell.fill      = navy_fill
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
     # Rows 5+ — Data
-    data_font = Font(name="Trebuchet MS", color=_TEXT_HEX, size=10)
+    data_font = Font(name="Tahoma", color=_TEXT_HEX, size=10)
     for ri, row_dict in enumerate(rows, start=5):
         ws.append([row_dict.get(col) for col in columns])
         ws.row_dimensions[ri].height = 18
@@ -181,9 +181,9 @@ def generate_excel(
     footer_row = len(rows) + 6
     ws.append([""] * n_cols)
     ws.append([_footer_text(upload_date)] + [""] * (n_cols - 1))
-    _merge(footer_row + 1)
-    c = ws.cell(footer_row + 1, 1)
-    c.font      = Font(name="Trebuchet MS", italic=True, color="AAAAAA", size=8)
+    _merge(footer_row)
+    c = ws.cell(footer_row, 1)
+    c.font      = Font(name="Tahoma", italic=True, color="AAAAAA", size=8)
     c.alignment = Alignment(horizontal="left", vertical="center")
 
     # Auto column widths
@@ -288,7 +288,7 @@ def _make_xy_chart_data(
 def _style_chart(chart, chart_type_str: str) -> None:
     """
     Replicate chart.py's McKinsey visual style on a native pptx chart object:
-      - Trebuchet MS, 10 pt, #555555 on all axis labels and legend
+      - Tahoma, 10 pt, #555555 on all axis labels and legend
       - McKinsey colour palette on series fills / lines
       - White chart area and plot area backgrounds
       - Very light gridlines (#F0F0F0, 0.8pt) on value axis only
@@ -331,14 +331,14 @@ def _style_chart(chart, chart_type_str: str) -> None:
     except Exception:
         pass
 
-    # ── 3. Legend: bottom, Trebuchet MS 10pt, no frame ───────────────────────
+    # ── 3. Legend: bottom, Tahoma 10pt, no frame ─────────────────────────────
     try:
         n_series = len(list(chart.series))
         chart.has_legend = n_series > 1
         if chart.has_legend:
             chart.legend.position = XL_LEGEND_POSITION.BOTTOM
             chart.legend.include_in_layout = False
-            chart.legend.font.name = "Trebuchet MS"
+            chart.legend.font.name = "Tahoma"
             chart.legend.font.size = Pt(10)
             chart.legend.font.color.rgb = _TEXT_RGB
     except Exception:
@@ -374,7 +374,7 @@ def _style_chart(chart, chart_type_str: str) -> None:
         plot = chart.plots[0]
         plot.has_data_labels = True
         dls = plot.data_labels
-        dls.font.name = "Trebuchet MS"
+        dls.font.name = "Tahoma"
         dls.font.bold = True
         if is_bar:
             # Inside bar end (white), PowerPoint auto-flips outside when bar is too short
@@ -398,7 +398,7 @@ def _style_chart(chart, chart_type_str: str) -> None:
     except Exception:
         pass
 
-    # ── 6. Value axis: light gridlines, Trebuchet MS 10pt, #DDDDDD spine ─────
+    # ── 6. Value axis: light gridlines, Tahoma 10pt, #DDDDDD spine ───────────
     try:
         va = chart.value_axis
         va.has_major_gridlines = True
@@ -406,19 +406,19 @@ def _style_chart(chart, chart_type_str: str) -> None:
         va.major_gridlines.format.line.width = Pt(0.8)
         va.has_minor_gridlines = False
         va.format.line.color.rgb = _SPINE_RGB
-        va.tick_labels.font.name = "Trebuchet MS"
+        va.tick_labels.font.name = "Tahoma"
         va.tick_labels.font.size = Pt(10)
         va.tick_labels.font.color.rgb = _TICK_RGB
     except Exception:
         pass
 
-    # ── 7. Category axis: no gridlines, Trebuchet MS 10pt, #DDDDDD spine ─────
+    # ── 7. Category axis: no gridlines, Tahoma 10pt, #DDDDDD spine ───────────
     try:
         ca = chart.category_axis
         ca.has_major_gridlines = False
         ca.has_minor_gridlines = False
         ca.format.line.color.rgb = _SPINE_RGB
-        ca.tick_labels.font.name = "Trebuchet MS"
+        ca.tick_labels.font.name = "Tahoma"
         ca.tick_labels.font.size = Pt(10)
         ca.tick_labels.font.color.rgb = _TICK_RGB
     except Exception:
@@ -478,7 +478,7 @@ def generate_ppt(
     p.alignment = PP_ALIGN.LEFT
     run = p.add_run()
     run.text           = title
-    run.font.name      = "Trebuchet MS"
+    run.font.name      = "Tahoma"
     run.font.bold      = True
     run.font.size      = Pt(18)
     run.font.color.rgb = _NAVY_RGB
@@ -549,7 +549,7 @@ def generate_ppt(
     p.alignment = PP_ALIGN.LEFT
     run = p.add_run()
     run.text           = _footer_text(upload_date)
-    run.font.name      = "Trebuchet MS"
+    run.font.name      = "Tahoma"
     run.font.size      = Pt(7)
     run.font.color.rgb = _GRAY_RGB
 
